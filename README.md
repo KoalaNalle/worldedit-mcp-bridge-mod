@@ -1,6 +1,6 @@
 # weditmcpbridge
 
-A minimal NeoForge companion mod for [mcp-worldedit-craftscript](../mcp-worldedit-craftscript).
+A minimal NeoForge companion mod for [mcp-worldedit-craftscript](https://github.com/Lucas-Buckley/mcp-worldedit-craftscript).
 
 ## Why this exists
 
