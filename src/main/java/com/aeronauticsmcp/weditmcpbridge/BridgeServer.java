@@ -49,7 +49,7 @@ class BridgeServer {
             Boolean.parseBoolean(System.getenv("WEDIT_BRIDGE_ALLOW_LEGACY_COMMANDS"));
 
     private final MinecraftServer server;
-    private final BoundedBuildService builds = new BoundedBuildService();
+    private final BoundedBuildService builds;
     private final ExecutorService connectionExecutor = new ThreadPoolExecutor(
             2, 4, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32), task -> {
                 Thread thread = new Thread(task, "weditmcpbridge-connection");
@@ -61,6 +61,7 @@ class BridgeServer {
 
     BridgeServer(MinecraftServer server) {
         this.server = server;
+        this.builds = new BoundedBuildService(server);
     }
 
     void start() {
@@ -133,12 +134,18 @@ class BridgeServer {
                 response = onServerThread(username, player -> selectCuboid(player, request));
             } else if ("preview_set_blocks".equals(action)) {
                 response = onServerThread(username, player -> builds.preview(player, request));
+            } else if ("preview_fill_cuboid".equals(action)) {
+                response = onServerThread(username, player -> builds.previewFillCuboid(player, request));
             } else if ("apply_preview".equals(action)) {
                 response = onServerThread(username, player -> builds.apply(player, request));
             } else if ("undo_operation".equals(action)) {
                 response = onServerThread(username, player -> builds.undo(player, request));
             } else if ("get_pending_operation".equals(action)) {
                 response = onServerThread(username, builds::pending);
+            } else if ("get_operation_status".equals(action)) {
+                response = onServerThread(username, player -> builds.operationStatus(player, request));
+            } else if ("list_operations".equals(action)) {
+                response = onServerThread(username, builds::listOperations);
             } else if (action == null && request.has("command")) {
                 // Legacy dispatch can execute unrestricted WorldEdit commands. Disabled by default.
                 String command = stringField(request, "command");
