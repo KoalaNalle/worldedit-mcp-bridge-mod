@@ -1,62 +1,157 @@
-# weditmcpbridge
+# WorldEdit MCP bridge for NeoForge
 
-A minimal NeoForge companion mod for [mcp-worldedit-craftscript](https://github.com/Lucas-Buckley/mcp-worldedit-craftscript).
+This is the [KoalaNalle development fork](https://github.com/KoalaNalle/worldedit-mcp-bridge-mod)
+of [Lucas-Buckley's original bridge](https://github.com/Lucas-Buckley/worldedit-mcp-bridge-mod),
+based on upstream commit `7148342e976501a8a993558f1967ef2397c421d1`. The original
+license and attribution remain in `LICENSE` and the Git history. It pairs with
+[KoalaNalle/mcp-worldedit-craftscript](https://github.com/KoalaNalle/mcp-worldedit-craftscript).
 
-## Why this exists
+## Purpose
 
-The MCP server was originally designed to drive WorldEdit entirely over RCON, using
-`execute as <player> at <player> run ...` to make commands act as a specific player. That
-does **not** work: WorldEdit resolves its "actor" (whose selection/undo history to use) from
-the real client connection, not from Brigadier's substituted command source — confirmed
-empirically (vanilla `execute as` correctly attributes chat messages to the player, but
-WorldEdit-specific commands silently no-op regardless).
+WorldEdit's player-scoped commands need a real `ServerPlayer` actor. Minecraft's RCON
+`execute as` substitutes a Brigadier source but does not make WorldEdit's own `//`
+command pipeline see that player. The bridge adapts the connected player with
+`NeoForgeAdapter.adaptPlayer` and dispatches a WorldEdit `CommandEvent` on the server
+thread. It also reads selection state directly through WorldEdit's `LocalSession` API.
 
-It turns out WorldEdit's `//`-prefixed commands (`//size`, `//cs`, `//undo`, etc.) aren't even
-registered in vanilla's Brigadier command tree at all — they're intercepted via WorldEdit's own
-chat-handling hook. So there's no command string that RCON, or even a genuine player-derived
-`CommandSourceStack` dispatched through vanilla Brigadier, can send to reach them.
+The bridge listens only on `127.0.0.1:25577` by default. `WEDIT_BRIDGE_PORT` can change
+the port, not the bind address. This socket is an internal connection trusted by the
+local MCP server. Do not publish it or RCON to the Internet.
 
-This mod runs inside the same JVM as WorldEdit and dispatches commands through WorldEdit's
-**own** command pipeline instead: it adapts a real `ServerPlayer` into a WorldEdit `Actor`
-(`NeoForgeAdapter.adaptPlayer`) and posts a `CommandEvent` to WorldEdit's own event bus — the
-same path a genuinely typed command takes. WorldEdit then correctly recognizes it as coming
-from that player.
+## Local protocol
 
-## What it does
+Each connection sends one UTF-8 JSON line, receives one JSON line, and closes. Requests
+are limited to 8 KiB. The connection pool and queue are bounded, and WorldEdit access
+runs on Minecraft's server thread with a 10-second response deadline.
 
-Exposes a **localhost-only** TCP endpoint (default `127.0.0.1:25577`) speaking a trivial
-one-line-JSON-in, one-line-JSON-out protocol:
+Read a player's actual selection:
 
-```
-→ {"username": "SomePlayer", "command": "/cs myscript arg1 arg2"}
-← {"ok": true, "handled": true}
+```json
+{"action":"get_selection","username":"SomePlayer"}
 ```
 
-- `command` should be exactly what a player would type, including the `/` or `//` prefix.
-  Region-editing commands use `//` (`//size`, `//undo N`); craftscripts use a single `/`
-  (`/cs <script> <args...>`) — these are genuinely different prefixes in WorldEdit, not a typo.
-- `handled: true` means WorldEdit's command manager processed it. `ok: false` with an `error`
-  means an exception was thrown (e.g. the player wasn't found).
-- WorldEdit's own feedback (selection details, error messages) goes to the player's real chat,
-  same as if they'd typed the command — this bridge doesn't currently capture that text.
+```json
+{"ok":true,"selection":{"dimension":"minecraft:overworld","selection_type":"cuboid","min":{"x":1,"y":64,"z":2},"max":{"x":3,"y":67,"z":4},"width":3,"height":4,"length":3,"block_volume":36}}
+```
 
-Never bind this to anything but `127.0.0.1`. It has no authentication of its own — it trusts
-whatever connects to it, which is only meant to be the MCP server on the same machine.
+The dimension is the selection's own dimension, which can differ from the player's
+current dimension. Width, height, length, and volume come from WorldEdit's selected
+`Region`; volume is a 64-bit count. Missing, incomplete, offline, and invalid requests
+return `ok:false`, `error_code`, and `error`.
+
+## Bounded construction prototype
+
+Block edits are **disabled by default**. For a disposable development world, set a
+single allowed region in the server process environment before launch, for example:
+
+```text
+WEDIT_BRIDGE_ALLOWED_REGION=minecraft:overworld;3000,100,240;3007,107,247
+```
+
+The coordinates are inclusive. The bridge requires that the connected player is a
+Minecraft operator, and only edits that player's current dimension inside this
+region. The service rejects unloaded chunks rather
+than generating them. It accepts at most 64 unique writes whose bounding box has a
+volume of at most 64 blocks. Targets are limited to the default states of
+`minecraft:stone_bricks`, `minecraft:sandstone`, `minecraft:smooth_sandstone`,
+`minecraft:cut_sandstone`, and `minecraft:chiseled_sandstone`. Changed blocks must
+be air beforehand, so this prototype cannot replace existing terrain or structures.
+Block entities are never overwritten. One operation may be pending undo at a time. The region setting
+is deliberately an explicit server startup choice; omitting or mistyping it disables
+bounded construction and selection actions.
+
+Set a real cuboid selection for the connected player without changing blocks:
+
+```json
+{"action":"select_cuboid","username":"SomePlayer","min":{"x":3000,"y":100,"z":240},"max":{"x":3004,"y":103,"z":240}}
+```
+
+The selection must fit the allowed region, have at most 64 blocks, and use loaded
+chunks. The bridge updates WorldEdit's actual `LocalSession` and returns the same
+structured selection as `get_selection`, with `status:"selected"` and
+`completed:true`. It does not move the player or edit blocks.
+
+Preview exact block writes:
+
+```json
+{"action":"preview_set_blocks","username":"SomePlayer","blocks":[{"x":3000,"y":101,"z":240,"block":"minecraft:stone_bricks"}]}
+```
+
+The response includes `preview_id`, a 60-second expiration, dimension, actual write
+bounds, inspected and expected-changed block counts, target and overwritten palettes,
+overwritten block entities, loaded-chunk status, and a fingerprint of the observed
+pre-state. Preview is read-only and a successful preview reports `completed:false`.
+The ID binds an immutable operation to the observed blocks. If any target changes or
+unloads, the player changes dimension, or the preview expires, application is rejected.
+
+Apply the preview once:
+
+```json
+{"action":"apply_preview","username":"SomePlayer","preview_id":"<UUID from preview>"}
+```
+
+This uses a WorldEdit `EditSession` on Minecraft's server thread. `ok:true` and
+`completed:true` mean the actual post-state of every target was checked against the
+preview. The response includes actual changed-block count, affected bounds, WorldEdit
+change-set size, post-state fingerprint, and an `operation_id`. A partial failure can
+still return an `operation_id` and `undo_available:true`; it is never reported as a
+completed build. The change-set size is diagnostic, not a claimed changed-block count.
+
+Undo only that operation:
+
+```json
+{"action":"undo_operation","username":"SomePlayer","operation_id":"<UUID from apply>"}
+```
+
+Undo first checks that the loaded targets still have the operation's observed
+post-state. It uses the retained WorldEdit change set (or a WorldEdit snapshot
+reversal if no change set was recorded) and verifies every original block state.
+`ok:true` and `completed:true` mean restoration was observed. `more_bridge_undo_history`
+describes only this bridge's retained operation; the player's other WorldEdit history
+is unknown. The bridge refuses to overwrite later edits at target positions. A
+restart clears in-memory preview and undo
+records; persistence and conflict recovery are outside this prototype's scope.
+
+If a response times out after the server thread started an action, the bridge returns
+`completion_unknown`; it does not claim that no edit occurred. Once the server is
+responsive, query the read-only recovery action before retrying:
+
+```json
+{"action":"get_pending_operation","username":"SomePlayer"}
+```
+
+It returns the pending bridge `operation_id`, whether the original apply completed,
+affected bounds, changed-block count, and whether the loaded world still matches the
+observed post-state. An `operation_id` can then be used for targeted undo. A timeout
+before an action starts cancels that queued action and returns `timeout`.
+
+These safeguards cover the explicit writes made by this bridge. Minecraft side effects
+and edits from other mods may alter adjacent blocks; use a disposable world and inspect
+the area after every operation. Arbitrary CraftScripts are not bounded by this path.
+
+The original command format is disabled by default because it can bypass the allowed
+region. It can be re-enabled only by explicitly setting
+`WEDIT_BRIDGE_ALLOW_LEGACY_COMMANDS=true` in the server process environment:
+
+```json
+{"username":"SomePlayer","command":"/cs myscript arg1"}
+```
+
+Its response includes `status:"dispatched"` and `completed:false`. `handled:true` only
+means WorldEdit intercepted the command. It does **not** establish that a CraftScript
+finished, blocks changed, or undo occurred. WorldEdit command feedback still goes to
+the player chat. Do not use this legacy path as construction completion evidence.
 
 ## Building
 
-1. Copy `local.properties.example` to `local.properties` and set `worldedit.jarPath` to your
-   server's installed `worldedit-mod-*.jar` (compiled against directly, for exact API match —
-   not fetched from Maven).
-2. `./gradlew.bat build` (Windows) or `./gradlew build` (Linux/Mac).
-3. Copy `build/libs/weditmcpbridge-*.jar` into your server's `mods/` folder.
-4. Restart the server. Look for `weditmcpbridge listening on 127.0.0.1:25577` in the log.
+1. Use Java 21, Minecraft 1.21.1, and NeoForge 21.1.233 or newer.
+2. Obtain the WorldEdit 7.3.8 NeoForge/Fabric `worldedit-mod-7.3.8.jar` from the
+   [official release](https://modrinth.com/plugin/worldedit/version/7.3.8).
+3. Copy `local.properties.example` to ignored `local.properties`; set
+   `worldedit.jarPath` to the absolute jar path. The jar is a compile-only dependency.
+4. Run `./gradlew.bat build` on Windows, or `./gradlew build` on other systems.
+5. Install this mod and WorldEdit into the same NeoForge development server/client.
+   Confirm the loopback listener message in the log.
 
-## Configuration
-
-- `WEDIT_BRIDGE_PORT` (environment variable on the Minecraft server process, optional) — port
-  to listen on, default `25577`.
-
-## License
-
-MIT
+Neither this fork nor the Minecraft: Dune project bundles WorldEdit. Minecraft: Dune
+builds and runs independently of this development bridge.
