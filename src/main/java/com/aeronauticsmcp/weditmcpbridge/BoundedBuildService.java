@@ -167,8 +167,10 @@ final class BoundedBuildService {
                 affected.addProperty("block", stateId(before));
                 overwrittenBlockEntities.add(affected);
             }
-            if (!before.equals(desired)) expectedChanged++;
-            overwrittenPalette.merge(stateId(before), 1, Integer::sum);
+            if (!before.equals(desired)) {
+                expectedChanged++;
+                overwrittenPalette.merge(stateId(before), 1, Integer::sum);
+            }
             targetPalette.add(id);
             writes.add(new Write(pos, desired, before));
             bounds = bounds == null ? new Bounds(pos) : bounds.include(pos);
