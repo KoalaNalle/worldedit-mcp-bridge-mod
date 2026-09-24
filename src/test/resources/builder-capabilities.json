@@ -1,0 +1,30 @@
+{
+  "supported_operation_types": [
+    "fill_cuboid",
+    "place_blocks"
+  ],
+  "max_retained_project_operations": 32,
+  "allowed_blocks": [
+    "minecraft:chiseled_sandstone",
+    "minecraft:cut_sandstone",
+    "minecraft:sandstone",
+    "minecraft:smooth_sandstone",
+    "minecraft:stone_bricks"
+  ],
+  "max_request_bytes": 65536,
+  "supported_block_states": [
+    "default inert masonry; exact air states for restoration"
+  ],
+  "max_conflicts_returned": 32,
+  "max_project_bounds_volume": 4096,
+  "max_projects_per_save": 4,
+  "supported_plan_schema": "dune-build-plan/v1",
+  "protocol_version": "dune-builder/2",
+  "max_explicit_bounds_volume": 64,
+  "max_journal_bytes": 16777216,
+  "max_write_count": 512,
+  "max_explicit_write_count": 64,
+  "max_operation_bounds_volume": 512,
+  "max_plan_write_count": 512,
+  "max_operations_per_plan": 8
+}

@@ -175,7 +175,7 @@ final class BoundedBuildService {
             writes.add(new Write(pos, desired, before));
             bounds = bounds == null ? new Bounds(pos) : bounds.include(pos);
         }
-        if (bounds == null || bounds.volume() > MAX_VOLUME) {
+        if (bounds == null || bounds.volume() > writeLimit) {
             return error("size_limit", "Write bounding volume exceeds " + MAX_VOLUME + " blocks");
         }
         writes.sort(POSITION_ORDER);

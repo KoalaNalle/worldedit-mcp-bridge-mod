@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 class BridgeServer {
     private static final Gson GSON = new Gson();
-    private static final int MAX_REQUEST_BYTES = 8192;
+    private static final int MAX_REQUEST_BYTES = 65536;
     private static final int MAX_COMMAND_LENGTH = 4096;
     private static final int SERVER_THREAD_TIMEOUT_SECONDS = 10;
     private static final boolean ALLOW_UNBOUNDED_LEGACY_COMMANDS =
@@ -50,6 +50,7 @@ class BridgeServer {
 
     private final MinecraftServer server;
     private final BoundedBuildService builds;
+    private final DurableBuildService projects;
     private final ExecutorService connectionExecutor = new ThreadPoolExecutor(
             2, 4, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32), task -> {
                 Thread thread = new Thread(task, "weditmcpbridge-connection");
@@ -62,6 +63,7 @@ class BridgeServer {
     BridgeServer(MinecraftServer server) {
         this.server = server;
         this.builds = new BoundedBuildService(server);
+        this.projects = new DurableBuildService(server);
     }
 
     void start() {
@@ -128,16 +130,18 @@ class BridgeServer {
 
             String action = stringField(request, "action");
             JsonObject response;
-            if ("get_selection".equals(action)) {
+            if (java.util.Set.of("builder_capabilities", "create_project", "list_projects", "get_project", "start_phase", "complete_phase", "preview_build_plan", "apply_build_plan", "undo_latest_phase", "rollback_project", "recover_project", "acknowledge_world_move").contains(action == null ? "" : action)) {
+                response = onServerThread(username, player -> projects.handle(action, player, request));
+            } else if ("get_selection".equals(action)) {
                 response = onServerThread(username, this::getSelection);
             } else if ("select_cuboid".equals(action)) {
                 response = onServerThread(username, player -> selectCuboid(player, request));
             } else if ("preview_set_blocks".equals(action)) {
-                response = onServerThread(username, player -> builds.preview(player, request));
+                response = onServerThread(username, player -> error("project_required", "Use preview_build_plan with a project and phase"));
             } else if ("preview_fill_cuboid".equals(action)) {
-                response = onServerThread(username, player -> builds.previewFillCuboid(player, request));
+                response = onServerThread(username, player -> error("project_required", "Use preview_build_plan with a project and phase"));
             } else if ("apply_preview".equals(action)) {
-                response = onServerThread(username, player -> builds.apply(player, request));
+                response = onServerThread(username, player -> error("project_required", "Use apply_build_plan with a project and phase"));
             } else if ("undo_operation".equals(action)) {
                 response = onServerThread(username, player -> builds.undo(player, request));
             } else if ("get_pending_operation".equals(action)) {
@@ -202,7 +206,7 @@ class BridgeServer {
             }
             JsonObject completed = future.getNow(null);
             if (completed != null) return completed;
-            return error("completion_unknown", "Action started but did not respond before timeout; query get_pending_operation before retrying");
+            return error("completion_unknown", "Action started but did not respond before timeout; query get_project (or legacy get_pending_operation) before retrying");
         } catch (Exception e) {
             if (phase.compareAndSet(0, 2)) {
                 future.complete(error("server_unavailable", "Minecraft server thread did not start the action"));
@@ -210,7 +214,7 @@ class BridgeServer {
             }
             JsonObject completed = future.getNow(null);
             if (completed != null) return completed;
-            return error("completion_unknown", "Action may have run; query get_pending_operation before retrying");
+            return error("completion_unknown", "Action may have run; query get_project (or legacy get_pending_operation) before retrying");
         }
     }
 
