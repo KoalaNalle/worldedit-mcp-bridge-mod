@@ -15,6 +15,9 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.storage.LevelResource;
+import net.minecraft.world.level.EmptyBlockGetter;
+import net.minecraft.world.level.block.FallingBlock;
+import net.minecraft.world.level.block.state.BlockState;
 
 /** Thin game-thread adapter; all project decisions and recovery live in the pure engine. */
 final class DurableBuildService {
@@ -104,12 +107,16 @@ final class DurableBuildService {
             "legacy_undo_pending",
             "Recover/undo the previous protocol operation before creating a project");
       }
-      return engine.handle(
+      JsonObject result = engine.handle(
           action,
           request,
           player.getUUID().toString(),
           player.serverLevel().dimension().location().toString(),
           new World() {
+            public void validateState(String state) {
+              validatedState(state);
+            }
+
             public String read(Pos pos) {
               var level = player.serverLevel();
               BlockPos p = new BlockPos(pos.x(), pos.y(), pos.z());
@@ -130,7 +137,12 @@ final class DurableBuildService {
 
             public void write(List<Write> writes, boolean undo) throws Exception {
               // Recheck loaded/block-entity state immediately before writes; no network wait here.
-              for (Write w : writes) read(w.pos());
+              Map<String, BlockState> states = new HashMap<>();
+              for (Write w : writes) {
+                read(w.pos());
+                String target = undo ? w.before() : w.after();
+                states.computeIfAbsent(target, DurableBuildService::validatedState);
+              }
               try (EditSession edit =
                   WorldEdit.getInstance()
                       .newEditSessionBuilder()
@@ -141,16 +153,7 @@ final class DurableBuildService {
                 edit.setReorderMode(EditSession.ReorderMode.NONE);
                 for (Write w : writes) {
                   String state = undo ? w.before() : w.after();
-                  ResourceLocation id = ResourceLocation.tryParse(state);
-                  require(
-                      id != null && BuiltInRegistries.BLOCK.containsKey(id),
-                      "unsupported_state",
-                      "Stored state cannot be restored");
-                  var block = BuiltInRegistries.BLOCK.get(id).defaultBlockState();
-                  require(
-                      NeoForgeAdapter.adapt(block).getAsString().equals(state),
-                      "unsupported_state",
-                      "Full stored state differs from default");
+                  BlockState block = states.get(state);
                   edit.setBlock(
                       BlockVector3.at(w.pos().x(), w.pos().y(), w.pos().z()),
                       NeoForgeAdapter.adapt(block));
@@ -162,10 +165,52 @@ final class DurableBuildService {
               server.saveEverything(true, true, true);
             }
           });
+      if (action.equals("builder_capabilities") && result.get("ok").getAsBoolean()) {
+        JsonArray metadata = new JsonArray();
+        new TreeSet<>(PALETTE).forEach(id -> metadata.add(inspectPalette(id)));
+        result.getAsJsonObject("capabilities").add("palette_metadata", metadata);
+      }
+      return result;
     } catch (Failure f) {
       return obj("ok", false, "error_code", f.code, "error", f.getMessage());
     } catch (Exception e) {
       return obj("ok", false, "error_code", "journal_unavailable", "error", e.getMessage());
     }
+  }
+  private static PaletteSafety.Facts facts(String id, BlockState state) {
+    return new PaletteSafety.Facts(true,
+        NeoForgeAdapter.adapt(state).getAsString().equals(id), state.getProperties().isEmpty(),
+        state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO),
+        state.hasBlockEntity(), !state.getFluidState().isEmpty(),
+        state.getBlock() instanceof FallingBlock, state.isRandomlyTicking(), state.isSignalSource());
+  }
+
+  private static BlockState validatedState(String text) {
+    require(PALETTE.contains(text) || isAir(text), "block_not_allowed", "Unsupported block/state");
+    ResourceLocation id = ResourceLocation.tryParse(text);
+    require(id != null && BuiltInRegistries.BLOCK.containsKey(id), "unsupported_state",
+        "Registry block missing: " + text);
+    BlockState state = BuiltInRegistries.BLOCK.get(id).defaultBlockState();
+    require(NeoForgeAdapter.adapt(state).getAsString().equals(text), "unsupported_state",
+        "Full stored state differs from default: " + text);
+    // Exact air states are restoration-only and intentionally do not have full collision.
+    if (isAir(text)) return state;
+    List<String> reasons = PaletteSafety.reasons(facts(text, state));
+    require(reasons.isEmpty(), "unsupported_state", "Unsafe palette block " + text + ": " + reasons);
+    return state;
+  }
+
+  private static JsonObject inspectPalette(String text) {
+    ResourceLocation id = ResourceLocation.tryParse(text);
+    if (id == null || !BuiltInRegistries.BLOCK.containsKey(id))
+      return obj("id", text, "source_mod", id == null ? "" : id.getNamespace(),
+          "registered", false, "safe", false, "safety_reasons", List.of("registry_missing"));
+    BlockState state = BuiltInRegistries.BLOCK.get(id).defaultBlockState();
+    List<String> reasons = PaletteSafety.reasons(facts(text, state));
+    return obj("id", text, "display_name", state.getBlock().getName().getString(),
+        "source_mod", id.getNamespace(), "block_class", state.getBlock().getClass().getName(),
+        "default_state", NeoForgeAdapter.adapt(state).getAsString(), "registered", true,
+        "light_emission", state.getLightEmission(EmptyBlockGetter.INSTANCE, BlockPos.ZERO),
+        "safe", reasons.isEmpty(), "safety_reasons", reasons);
   }
 }

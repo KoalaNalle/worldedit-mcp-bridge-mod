@@ -81,8 +81,24 @@ fresh test after exhausting this conservative history budget.
 
 `builder_capabilities` is the authoritative machine contract; TypeScript reads it before
 plan/project validation. Both test suites assert the checked-in contract fixtures.
-The only targets are default full blocks: stone bricks, sandstone, smooth sandstone,
-cut sandstone and chiseled sandstone. Writes require air or the identical desired state.
+Targets retain the five original stone-brick/sandstone IDs and add only these inspected
+royal-palace candidates: `create:polished_cut_limestone`, `create:cut_limestone`,
+`create:cut_limestone_bricks`, `create:polished_cut_calcite`,
+`minecraft:chiseled_quartz_block`, `create:industrial_iron_block`,
+`create:brass_block`, and `supplementaries:deepslate_lamp`. This is a bounded
+allowlist, not permission for arbitrary registry blocks. A listed candidate may still
+be unavailable or unsafe in the current modpack: the loaded registry must contain it,
+its exact WorldEdit default state must equal its bare ID, it must have no properties,
+full collision, no block entity or fluid, no falling behavior, no random ticks and no
+signal-source behavior. The explicit ID selection remains the review boundary for
+interaction behavior; these mechanical checks do not certify arbitrary mod blocks.
+The bridge reports optional `palette_metadata` (ID, display name, source namespace,
+class, full default state, light emission and safety rejection reasons) through
+capabilities. A listed block with `safe:false` cannot be built. Missing optional mods
+do not disable the original palette. Legacy protocol-1 palette support is unchanged.
+Preview validates targets before retaining a token. Apply and reversal preflight all
+states before journal transitions, and the adapter resolves the complete operation
+before opening its WorldEdit edit session. Writes require air or the identical desired state.
 Snapshots retain the full canonical WorldEdit block-state string, and restoration rejects
 any string that cannot round-trip exactly. Existing stateful terrain, block entities,
 fluids, gravity blocks, redstone, entities and Create machines cannot be overwritten.

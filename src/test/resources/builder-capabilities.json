@@ -5,15 +5,23 @@
   ],
   "max_retained_project_operations": 32,
   "allowed_blocks": [
+    "create:brass_block",
+    "create:cut_limestone",
+    "create:cut_limestone_bricks",
+    "create:industrial_iron_block",
+    "create:polished_cut_calcite",
+    "create:polished_cut_limestone",
+    "minecraft:chiseled_quartz_block",
     "minecraft:chiseled_sandstone",
     "minecraft:cut_sandstone",
     "minecraft:sandstone",
     "minecraft:smooth_sandstone",
-    "minecraft:stone_bricks"
+    "minecraft:stone_bricks",
+    "supplementaries:deepslate_lamp"
   ],
   "max_request_bytes": 65536,
   "supported_block_states": [
-    "default inert masonry; exact air states for restoration"
+    "allowlisted default inert full blocks; exact air states for restoration"
   ],
   "max_conflicts_returned": 32,
   "max_project_bounds_volume": 4096,

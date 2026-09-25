@@ -27,6 +27,12 @@ class BuilderEngineTest {
     final Map<Pos, String> blocks = new HashMap<>();
     int writeCalls = 0, failAfter = -1;
     boolean checkpointFailure = false, unloaded = false;
+    final Set<String> unavailableStates = new HashSet<>();
+
+    public void validateState(String state) {
+      require(!unavailableStates.contains(state), "unsupported_state", "Injected unavailable state");
+      require(PALETTE.contains(state) || isAir(state), "block_not_allowed", "Unsupported state");
+    }
 
     public String read(Pos p) {
       if (unloaded) throw new Failure("chunk_unloaded", "Not loaded");
@@ -393,6 +399,63 @@ class BuilderEngineTest {
     }
     p.getAsJsonArray("operations").get(0).getAsJsonObject().addProperty("block", "minecraft:chest");
     assertThrows(Failure.class, () -> parsePlan(p));
+  }
+
+  @Test
+  void expandedPaletteRetainsExactStatesAndRestoresAfterReload() {
+    create();
+    start(PHASE);
+    List<String> palette = new TreeSet<>(PALETTE).stream().toList();
+    List<JsonObject> placements = new ArrayList<>();
+    for (int i = 0; i < palette.size(); i++) {
+      world.blocks.put(new Pos(i, 0, 0), i % 2 == 0 ? "minecraft:cave_air" : AIR);
+      placements.add(obj("pos", new Pos(i, 0, 0), "block", palette.get(i)));
+    }
+    JsonObject plan = obj("schema", SCHEMA, "project_id", PROJECT, "phase_id", PHASE,
+        "operations", List.of(obj("type", "place_blocks", "placements", placements)));
+    JsonObject preview = good("preview_build_plan", obj("project_id", PROJECT, "plan", plan));
+    good("apply_build_plan", applyArgs(preview));
+    good("complete_phase", obj("project_id", PROJECT, "phase_id", PHASE));
+    engine = new BuilderEngine(store, identity, "original", "minecraft:overworld", site);
+    assertTrue(good("get_project", args()).getAsJsonObject("verification").get("matches").getAsBoolean());
+    for (int i = 0; i < palette.size(); i++) assertEquals(palette.get(i), world.read(new Pos(i, 0, 0)));
+    good("rollback_project", args());
+    for (int i = 0; i < palette.size(); i++)
+      assertEquals(i % 2 == 0 ? "minecraft:cave_air" : AIR, world.read(new Pos(i, 0, 0)));
+    assertEquals(palette.size(), operations(store.load().projects.getFirst()).getFirst().writes.size());
+  }
+
+  @Test
+  void unavailableRuntimeStateFailsBeforePreviewAndBeforeAnyApplyWrites() {
+    create();
+    start(PHASE);
+    world.unavailableStates.add(STONE);
+    error("unsupported_state", "preview_build_plan", obj("project_id", PROJECT, "plan", fill(PHASE, 0, 1)));
+    assertEquals(0, world.writeCalls);
+    assertEquals(0, operations(project()).size());
+    world.unavailableStates.clear();
+    JsonObject preview = preview(PHASE, 0, 1);
+    world.unavailableStates.add(STONE);
+    error("unsupported_state", "apply_build_plan", applyArgs(preview));
+    assertEquals(0, world.writeCalls);
+    assertEquals(0, operations(project()).size());
+    world.unavailableStates.clear();
+    good("apply_build_plan", applyArgs(preview));
+    world.unavailableStates.add(AIR);
+    error("unsupported_state", "rollback_project", args());
+    assertEquals(1, world.writeCalls);
+    assertEquals(STONE, world.read(new Pos(0, 0, 0)));
+  }
+
+  @Test
+  void arbitraryOrStatefulBlocksRemainRejected() {
+    for (String id : List.of("minecraft:gold_block", "minecraft:chest", "create:belt",
+        "minecraft:water", "minecraft:sand", "minecraft:sandstone_stairs[facing=north]",
+        "create:polished_cut_limestone[axis=y]", "unknown:missing", "minecraft:air")) {
+      JsonObject plan = fill(PHASE, 0, 1);
+      plan.getAsJsonArray("operations").get(0).getAsJsonObject().addProperty("block", id);
+      assertEquals("block_not_allowed", assertThrows(Failure.class, () -> parsePlan(plan)).code);
+    }
   }
 
   @Test

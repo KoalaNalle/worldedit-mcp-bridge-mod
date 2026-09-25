@@ -27,7 +27,15 @@ final class BuilderEngine {
           "minecraft:sandstone",
           "minecraft:smooth_sandstone",
           "minecraft:cut_sandstone",
-          "minecraft:chiseled_sandstone");
+          "minecraft:chiseled_sandstone",
+          "create:polished_cut_limestone",
+          "create:cut_limestone",
+          "create:cut_limestone_bricks",
+          "create:polished_cut_calcite",
+          "minecraft:chiseled_quartz_block",
+          "create:industrial_iron_block",
+          "create:brass_block",
+          "supplementaries:deepslate_lamp");
 
   enum State {
     PREPARED,
@@ -98,6 +106,9 @@ final class BuilderEngine {
   interface World {
     // Must reject unloaded positions and block entities; never generate chunks.
     String read(Pos p);
+
+    // Fail closed for missing or unsafe default states before preview, apply and reversal.
+    void validateState(String state);
 
     void write(List<Write> writes, boolean undo) throws Exception;
 
@@ -241,7 +252,7 @@ final class BuilderEngine {
     c.add("allowed_blocks", JSON.toJsonTree(new TreeSet<>(PALETTE)));
     c.add(
         "supported_block_states",
-        JSON.toJsonTree(List.of("default inert masonry; exact air states for restoration")));
+        JSON.toJsonTree(List.of("allowlisted default inert full blocks; exact air states for restoration")));
     c.add("supported_operation_types", JSON.toJsonTree(List.of("fill_cuboid", "place_blocks")));
     return c;
   }
@@ -487,6 +498,8 @@ final class BuilderEngine {
         operations(p).size() + plan.operations.size() <= HISTORY,
         "history_limit",
         "Retained operation limit reached (including undone records)");
+    plan.operations.stream().flatMap(op -> op.targets.stream())
+        .map(Target::block).distinct().forEach(world::validateState);
     TreeMap<Pos, String> initial = new TreeMap<>(), virtual = new TreeMap<>();
     List<List<Write>> all = new ArrayList<>();
     TreeMap<String, Integer> overwritten = new TreeMap<>(), palette = new TreeMap<>();
@@ -589,6 +602,9 @@ final class BuilderEngine {
           "Target block state changed; preview again");
     require(
         operations(p).size() + v.writes.size() <= HISTORY, "history_limit", "Project history full");
+    v.writes.stream().flatMap(List::stream)
+        .flatMap(w -> java.util.stream.Stream.of(w.before, w.after))
+        .distinct().forEach(world::validateState);
     previews.remove(v.id);
     List<String> ids = new ArrayList<>();
     for (List<Write> writes : v.writes) {
@@ -680,6 +696,9 @@ final class BuilderEngine {
     for (Phase ph : phases)
       for (Operation o : ph.operations.reversed())
         if (o.state != State.UNDONE && o.state != State.FAILED) reverse.add(o);
+    reverse.stream().flatMap(o -> o.writes.stream())
+        .flatMap(w -> java.util.stream.Stream.of(w.before, w.after))
+        .distinct().forEach(world::validateState);
     TreeMap<Pos, String> virtual = new TreeMap<>();
     List<JsonObject> conflicts = new ArrayList<>();
     int conflictCount = 0;
